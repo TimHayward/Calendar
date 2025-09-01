@@ -26,8 +26,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - run: npm ci
-      - run: npm run ci        # produce files into ./public (e.g., school-calendar.ics)
+      - run: npm install
+      - run: npm run install        # produce files into ./public (e.g., school-calendar.ics)
 
       # Package the site for Pages
       - name: Upload Pages artifact
