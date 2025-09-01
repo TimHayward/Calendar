@@ -1,0 +1,17 @@
+export const pkg = `{
+  "name": "involve-ics-publisher",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "scrape": "node scripts/scrape-and-build-ics.mjs",
+    "validate": "node scripts/validate.mjs",
+    "ci": "node scripts/scrape-and-build-ics.mjs --ci"
+  },
+  "dependencies": {
+    "ics": "^3.0.2",
+    "luxon": "^3.4.4",
+    "node-ical": "^0.16.0",
+    "playwright": "^1.46.0"
+  }
+}`
