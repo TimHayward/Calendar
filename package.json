@@ -1,4 +1,4 @@
-export const pkg = `{
+{
   "name": "involve-ics-publisher",
   "version": "1.0.0",
   "private": true,
@@ -14,4 +14,4 @@ export const pkg = `{
     "node-ical": "^0.16.0",
     "playwright": "^1.46.0"
   }
-}`
+}
