@@ -5,7 +5,7 @@ on:
     branches: [ main ]
   workflow_dispatch:
   schedule:
-    - cron: "0 */6 * * *"   # optional: every 6 hours
+    - cron: "0 */6 * * *"
 
 permissions:
   contents: read
@@ -21,15 +21,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      # ⬇️ Your build steps go here. Example (Node):
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - run: npm install
-      - run: npm run ci        # produce files into ./public (e.g., school-calendar.ics)
 
-      # Package the site for Pages
+      - run: npm install
+      - run: npx playwright install --with-deps chromium
+      - run: npm run ci
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
