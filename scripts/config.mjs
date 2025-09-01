@@ -2,7 +2,7 @@ export default {
   targetUrl: "https://app.involveeducation.com/involve/display/6491925eefde2898c2ee6c76",
 
   startDate: "",         // or "2025-09-01"
-  windowDays: 14,
+  windowDays: 31,
   timeZone: "Europe/London",
 
   expectedCounts: null,  // or { week1: 20, week2: 15 }
