@@ -1,24 +1,26 @@
 export default {
-  // Your public Involve display URL
   targetUrl: "https://app.involveeducation.com/involve/display/6491925eefde2898c2ee6c76",
 
-  // Date window
-  startDate: "",          // e.g. "2025-09-01" for a fixed window; "" = today (local to Europe/London)
+  startDate: "",         // or "2025-09-01"
   windowDays: 14,
   timeZone: "Europe/London",
 
-  // Optional exact split checks for a known fortnight (disable by leaving null)
-  // expectedCounts: { week1: 20, week2: 15 },
-  expectedCounts: null,
+  expectedCounts: null,  // or { week1: 20, week2: 15 }
 
-  // Output (published by GitHub Pages)
   outputPath: "public/school-calendar.ics",
   outputJsonPath: "public/source-events.json",
 
-  // Guardrails
   sanity: {
-    minEvents: 1,                 // fail build if fewer than this
-    protectLastGood: true,        // don't overwrite if validation fails
+    minEvents: 1,
+    protectLastGood: true,
     lastGoodPath: "public/school-calendar.lastgood.ics"
+  },
+
+  // NEW: diagnostics
+  debug: {
+    enabled: true,
+    htmlPath: "public/debug-page.html",
+    screenshotPath: "public/debug-page.png",
+    networkLogPath: "public/debug-network.json"
   }
 };
