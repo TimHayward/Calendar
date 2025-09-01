@@ -27,7 +27,7 @@ jobs:
         with:
           node-version: "20"
       - run: npm install
-      - run: npm run install        # produce files into ./public (e.g., school-calendar.ics)
+      - run: npm run ci        # produce files into ./public (e.g., school-calendar.ics)
 
       # Package the site for Pages
       - name: Upload Pages artifact
