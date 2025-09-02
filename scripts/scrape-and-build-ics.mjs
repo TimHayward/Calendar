@@ -14,9 +14,8 @@ function ensureDir(p) { fs.mkdirSync(path.dirname(p), { recursive: true }); }
 
 function windowBounds() {
   const tz = cfg.timeZone || "Europe/London";
-  const start =
-    (cfg.startDate && DateTime.fromISO(cfg.startDate, { zone: tz }).startOf("day")) ||
-    DateTime.now().setZone(tz).startOf("day");
+  const start = (cfg.startDate && DateTime.fromISO(cfg.startDate, { zone: tz }).startOf("day"))
+    || DateTime.now().setZone(tz).startOf("day");
   const end = start.plus({ days: cfg.windowDays });
   return { start, end, tz };
 }
@@ -46,10 +45,12 @@ function normaliseFromJSON(raw, tz) {
     const s  = e.start || e.starts_at || e.start_date || e.startDate || e.startsAt || e.starts || e.start_time || e.dtstart;
     const en = e.end   || e.ends_at   || e.end_date   || e.endDate   || e.endsAt   || e.ends   || e.end_time   || e.dtend;
 
-    let start = typeof s === "number" ? DateTime.fromMillis(s, { zone: "utc" }) : DateTime.fromISO(String(s), { zone: "utc" });
-    let end   = en ? (typeof en === "number" ? DateTime.fromMillis(en, { zone: "utc" }) : DateTime.fromISO(String(en), { zone: "utc" })) : null;
+    let start = typeof s === "number" ? DateTime.fromMillis(s, { zone: "utc" })
+                                      : DateTime.fromISO(String(s), { zone: "utc" });
+    let end   = en ? (typeof en === "number" ? DateTime.fromMillis(en, { zone: "utc" })
+                                             : DateTime.fromISO(String(en), { zone: "utc" })) : null;
 
-    if (!start.isValid) continue;
+    if (!start?.isValid) continue;
     if (!end) end = start.plus({ hours: 1 });
     if (end <= start) end = start.plus({ minutes: 30 });
 
@@ -65,212 +66,127 @@ function uniqBy(arr, idFn) {
 }
 
 async function acceptCookies(page) {
-  const candidates = [
+  const selectors = [
     'button:has-text("Accept")','button:has-text("I agree")','button:has-text("Allow all")',
     '[aria-label*="accept" i]','[data-testid*="accept" i]'
   ];
-  for (const sel of candidates) {
-    try { const el = await page.$(sel); if (el) { await el.click({ timeout: 1000 }).catch(()=>{}); await sleep(300); } } catch {}
+  for (const sel of selectors) {
+    try { const el = await page.$(sel); if (el) { await el.click({ timeout: 800 }).catch(()=>{}); await sleep(200); } } catch {}
   }
 }
 
-async function autoScrollExhaustive(page) {
-  // Trigger lazy loads by scrolling until height stabilises
-  let last = 0, stable = 0;
-  for (let i = 0; i < 40 && stable < 3; i++) {
-    const h = await page.evaluate(() => document.body.scrollHeight);
-    if (h <= last) stable++; else stable = 0;
-    last = h;
-    await page.evaluate(() => window.scrollBy(0, 900));
-    await page.waitForTimeout(200);
-  }
+async function autoScroll(page) {
+  // Trigger any lazy lists quickly
+  for (let i=0;i<10;i++){ await page.evaluate(() => window.scrollBy(0, 900)); await page.waitForTimeout(120); }
   await page.waitForLoadState("networkidle").catch(()=>{});
 }
 
-async function readHeaderText(page) {
-  // Try likely selectors for the date-range text; fall back to largest H-tag in header-ish areas
-  const candidates = [
-    '[class*="calendar" i] [class*="header" i]',
-    '[role="heading"]',
-    'header h1, header h2, header h3',
-    '[class*="date-range" i]',
-    'h1, h2'
-  ];
-  for (const sel of candidates) {
-    try {
-      const txt = await page.locator(sel).first().textContent({ timeout: 500 }).catch(() => null);
-      if (txt && txt.trim().length > 0) return txt.trim();
-    } catch {}
+function buildWeekUrls(baseUrl, start, end) {
+  const urls = [];
+  for (let d = start; d < end; d = d.plus({ days: 7 })) {
+    const u = new URL(baseUrl);
+    u.searchParams.set("date", d.toISODate()); // YYYY-MM-DD
+    urls.push(u.toString());
   }
-  // Fallback: body text snapshot (cheap heuristic)
-  try { return (await page.locator("body").textContent({ timeout: 500 })).slice(0, 200) || ""; } catch { return ""; }
+  return urls;
 }
 
-async function clickWeekNav(page, which /* "next" | "prev" */) {
-  // Return true only if the header text actually changes.
-  const before = await readHeaderText(page);
-
-  const selectorSets = {
-    next: [
-      '[aria-label="Next"]','[data-testid*="next" i]','button[aria-label*="next" i]',
-      'button:has-text("Next")','[class*="next" i] button','[aria-label^="Next week" i]'
-    ],
-    prev: [
-      '[aria-label="Previous"]','[data-testid*="prev" i]','button[aria-label*="prev" i]',
-      'button:has-text("Previous")','[class*="prev" i] button','[aria-label^="Previous week" i]'
-    ]
-  };
-
-  // Strategy 1: conventional selectors
-  for (const sel of selectorSets[which]) {
-    try {
-      const btn = await page.$(sel);
-      if (btn) {
-        await btn.click({ timeout: 1500 }).catch(()=>{});
-        await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(()=>{});
-        await page.waitForTimeout(500);
-        const after = await readHeaderText(page);
-        if (after && after !== before) { log(`clicked ${which} via selector ${sel}`); return true; }
-      }
-    } catch {}
-  }
-
-  // Strategy 2: keyboard (only counts if header changes)
-  try {
-    await page.keyboard.press(which === "next" ? "ArrowRight" : "ArrowLeft");
-    await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(()=>{});
-    await page.waitForTimeout(400);
-    const after = await readHeaderText(page);
-    if (after && after !== before) { log(`pressed keyboard ${which}`); return true; }
-  } catch {}
-
-  // Strategy 3: offset click near header text (right or left)
-  try {
-    const headerLoc = page.locator('header, [class*="header" i]').first();
-    const box = await headerLoc.boundingBox();
-    if (box) {
-      const x = which === "next" ? box.x + box.width - 10 : box.x + 10;
-      const y = box.y + box.height / 2;
-      await page.mouse.click(x, y);
-      await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(()=>{});
-      await page.waitForTimeout(400);
-      const after = await readHeaderText(page);
-      if (after && after !== before) { log(`clicked ${which} via offset near header`); return true; }
-    }
-  } catch {}
-
-  return false;
-}
-
-(async () => {
-  const watchdogEnds = Date.now() + 120000; // 120s wall clock watchdog
-  const { start, end } = windowBounds();
-
-  const browser = await chromium.launch({ args: ["--lang=en-GB"], headless: true });
-  const context = await browser.newContext({
-    locale: "en-GB",
-    timezoneId: cfg.timeZone || "Europe/London",
-    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    viewport: { width: 1366, height: 900 }
-  });
-
-  // Capture candidate JSON across all frames/content-types
+async function captureWeek(context, url) {
+  const page = await context.newPage();
+  // Per-page capture of JSON
   const captured = [];
-  context.on("response", async (resp) => {
+  const handler = async (resp) => {
     try {
       const ct = (resp.headers()["content-type"] || "").toLowerCase();
-      const url = resp.url();
-      if (!/event|cal|sched|activity|occurrence|timeline|calendar|feed|graphql|api/i.test(url)) return;
+      const ru = resp.url();
+      if (!/event|cal|sched|activity|occurrence|timeline|calendar|feed|graphql|api/i.test(ru)) return;
       if (ct.includes("json") || ct.includes("javascript") || ct.includes("text/plain")) {
         let data = null;
         try { data = await resp.json(); }
         catch { const txt = await resp.text(); try { data = JSON.parse(txt); } catch {} }
-        if (data) captured.push({ url, json: data, ct });
+        if (data) captured.push({ url: ru, json: data, ct });
       }
     } catch {}
-  });
+  };
+  context.on("response", handler);
 
-  const page = await context.newPage();
-  if (cfg.debug?.enabled) page.on("console", msg => console.log("[page]", msg.type(), msg.text()));
-
-  log("Loading", cfg.targetUrl);
-  await page.goto(cfg.targetUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
+  log("Loading", url);
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
   await acceptCookies(page);
   await page.waitForLoadState("networkidle", { timeout: 60000 }).catch(()=>{});
-  await autoScrollExhaustive(page);
+  await autoScroll(page);
 
-  const allNormalised = () => captured.flatMap(c => { try { return normaliseFromJSON(c.json, cfg.timeZone); } catch { return []; } });
-
-  // Helper: current coverage
-  const coverage = () => {
-    const evs = allNormalised();
-    if (!evs.length) return { min: null, max: null, okStart: false, okEnd: false, count: 0 };
-    const min = evs.reduce((a,b)=> a.start < b.start ? a : b).start;
-    const max = evs.reduce((a,b)=> a.start > b.start ? a : b).start;
-    return { min, max, okStart: !!min && min <= start, okEnd: !!max && max >= end.minus({minutes:1}), count: evs.length };
-  };
-
-  // Expand both ways with strong guards
-  let stale = 0;
-  let lastCount = 0;
-  let iterations = 0;
-  const MAX_ITER = 20;
-  const MAX_STALE = 5;
-
-  // First try to ensure we include the start bound
-  while (Date.now() < watchdogEnds && iterations < MAX_ITER) {
-    iterations++;
-    const { okStart, count } = coverage();
-    if (okStart) break;
-    const moved = await clickWeekNav(page, "prev");
-    if (!moved) break;
-    await autoScrollExhaustive(page);
-
-    if (count === lastCount) stale++; else stale = 0;
-    lastCount = count;
-    if (stale >= MAX_STALE) { log("stopping: stale while going prev"); break; }
+  // Prefer network JSON
+  let events = [];
+  for (const c of captured) {
+    if (isLikelyEventsJSON(c.json)) {
+      const batch = normaliseFromJSON(c.json, cfg.timeZone);
+      if (batch.length) events = events.concat(batch);
+    }
   }
 
-  stale = 0;
-  // Then ensure we include the end bound
-  while (Date.now() < watchdogEnds && iterations < MAX_ITER) {
-    iterations++;
-    const { okEnd, count } = coverage();
-    if (okEnd) break;
-    const moved = await clickWeekNav(page, "next");
-    if (!moved) break;
-    await autoScrollExhaustive(page);
+  // Fallback to DOM if no JSON
+  if (!events.length) {
+    const dom = await page.evaluate(() => {
+      const items = [];
+      const nodes = document.querySelectorAll('[data-event], [class*="event" i], [class*="calendar" i], article, li');
+      nodes.forEach(el => {
+        const text = el.innerText || "";
+        const title = el.querySelector("h1,h2,h3,.title,[class*='title' i]")?.textContent?.trim();
+        const when  = el.querySelector("[class*='date' i],[class*='time' i],time")?.textContent?.trim();
+        const where = el.querySelector("[class*='location' i],[class*='place' i]")?.textContent?.trim();
+        const href  = el.querySelector("a")?.href || null;
+        if (title && (when || /\d{1,2}:\d{2}|am|pm|Mon|Tue|Wed|Thu|Fri|Sat|Sun|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec/i.test(text))) {
+          items.push({ title, when, where, href, rawText: text });
+        }
+      });
+      return items;
+    });
 
-    if (count === lastCount) stale++; else stale = 0;
-    lastCount = count;
-    if (stale >= MAX_STALE) { log("stopping: stale while going next"); break; }
+    const tz = cfg.timeZone;
+    const parseWhen = (_t, whenText) => {
+      if (!whenText) return null;
+      const cleaned = whenText.replace(/\s+–\s+/g, " - ").replace(/\u2013|\u2014/g, "-");
+      let m = cleaned.match(/(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\d{1,2}\s+\w+\s+\d{4})\s+(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/i)
+           || cleaned.match(/(\d{1,2}\s+\w+\s+\d{4})\s+(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/i);
+      if (m) {
+        const datePart = m[2] ?? m[1];
+        const t1 = m[m.length - 2], t2 = m[m.length - 1];
+        const d = DateTime.fromFormat(`${datePart} ${t1}`, "d LLL yyyy HH:mm", { zone: tz });
+        const e = DateTime.fromFormat(`${datePart} ${t2}`, "d LLL yyyy HH:mm", { zone: tz });
+        if (d.isValid && e.isValid) return { start: d, end: e, allDay: false };
+      }
+      m = cleaned.match(/(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{4})/i);
+      if (m) {
+        const d = DateTime.fromFormat(`${m[1]} ${m[2]} ${m[3]}`, "d LLL yyyy", { zone: tz });
+        if (d.isValid) return { start: d.startOf("day"), end: d.plus({ days: 1 }).startOf("day"), allDay: true };
+      }
+      return null;
+    };
+
+    events = dom.map(e => {
+      const parsed = parseWhen(e.title, e.when || e.rawText);
+      if (!parsed) return null;
+      return { title: e.title, location: e.where || "", description: "", url: e.href || null, allDay: parsed.allDay, start: parsed.start, end: parsed.end };
+    }).filter(Boolean);
   }
 
-  // Prefer captured JSON; dedupe
-  let events = uniqBy(allNormalised(), e => `${e.title}|${e.start.toISO()}|${e.location || ""}`);
-  // Filter to window
-  events = events.filter(e => e.start < end && e.end > start);
-
-  // Debug artefacts
+  // Optional: write per-week debug (helps diagnose)
   if (cfg.debug?.enabled) {
-    try { ensureDir(cfg.debug.htmlPath); fs.writeFileSync(cfg.debug.htmlPath, await page.content(), "utf8"); } catch {}
-    try { ensureDir(cfg.debug.screenshotPath); await page.screenshot({ path: cfg.debug.screenshotPath, fullPage: true }); } catch {}
     try {
-      ensureDir(cfg.debug.networkLogPath);
-      const redacted = captured.map(({ url, ct, json }) => ({ url, ct, keys: json && typeof json === "object" ? Object.keys(json) : [] }));
-      fs.writeFileSync(cfg.debug.networkLogPath, JSON.stringify({ count: captured.length, entries: redacted }, null, 2), "utf8");
+      const stamp = new URL(url).searchParams.get("date") || "week";
+      ensureDir(cfg.debug.htmlPath);
+      await page.screenshot({ path: cfg.debug.screenshotPath.replace(".png", `-${stamp}.png`), fullPage: true }).catch(()=>{});
     } catch {}
   }
 
-  await browser.close();
+  await page.close();
+  context.off("response", handler);
+  return events;
+}
 
-  // Sanity threshold
-  if ((events.length || 0) < (cfg.sanity?.minEvents ?? 1)) {
-    throw new Error(`Sanity check: only ${events.length} events found (min ${cfg.sanity?.minEvents}).`);
-  }
-
-  // Build ICS
-  const icsEvents = events.map(e => {
+function toIcsEvents(evts) {
+  return evts.map(e => {
     const s = e.start.setZone("utc");
     const en = e.end.setZone("utc");
     const base = {
@@ -290,27 +206,81 @@ async function clickWeekNav(page, which /* "next" | "prev" */) {
       return { ...base, startInputType: "utc", endInputType: "utc", start: [s.year, s.month, s.day, s.hour, s.minute], end: [en.year, en.month, en.day, en.hour, en.minute] };
     }
   });
+}
 
-  const icsText = await new Promise((resolve, reject) => {
+function writeICS(icsEvents, outPath) {
+  return new Promise((resolve, reject) => {
     createEvents(icsEvents, (err, value) => {
       if (err) return reject(err);
-      ensureDir(cfg.outputPath);
-      fs.writeFileSync(cfg.outputPath, value, "utf8");
+      ensureDir(outPath);
+      fs.writeFileSync(outPath, value, "utf8");
       resolve(value);
     });
   });
+}
 
-  // Validate round-trip
+function validateAgainstSource(events, icsText, start, end) {
   const parsed = ical.parseICS(icsText);
-  const icsEventsParsed = Object.values(parsed).filter(v => v.type === "VEVENT");
+  const icsEvents = Object.values(parsed).filter(v => v.type === "VEVENT");
   const within = (d) => d >= start.toJSDate() && d <= end.toJSDate();
-  const icsWindow = icsEventsParsed.filter(v => within(v.start));
 
-  if (icsWindow.length !== events.length) {
-    throw new Error(`Validation failed: ICS count ${icsWindow.length} != source count ${events.length}`);
+  const srcWindow = events.filter(e => e.start < end && e.end > start);
+  const icsWindow = icsEvents.filter(v => within(v.start));
+
+  if (icsWindow.length !== srcWindow.length) {
+    throw new Error(`Validation failed: ICS count ${icsWindow.length} != source count ${srcWindow.length}`);
   }
 
+  if (cfg.expectedCounts) {
+    const w1End = start.plus({ days: 7 });
+    const w1src = srcWindow.filter(e => e.start < w1End);
+    const w2src = srcWindow.filter(e => e.start >= w1End);
+    const w1ics = icsWindow.filter(v => v.start < w1End.toJSDate());
+    const w2ics = icsWindow.filter(v => v.start >= w1End.toJSDate());
+    if (w1src.length !== cfg.expectedCounts.week1 || w2src.length !== cfg.expectedCounts.week2) {
+      throw new Error(`Source window counts differ from expected (src week1=${w1src.length}, week2=${w2src.length})`);
+    }
+    if (w1ics.length !== cfg.expectedCounts.week1 || w2ics.length !== cfg.expectedCounts.week2) {
+      throw new Error(`ICS window counts differ from expected (ics week1=${w1ics.length}, week2=${w2ics.length})`);
+    }
+  }
+}
+
+(async () => {
+  const { start, end } = windowBounds();
+
+  // Build list of week URLs using the date query
+  const weekUrls = buildWeekUrls(cfg.targetUrl, start, end);
+
+  const browser = await chromium.launch({ args: ["--lang=en-GB"], headless: true });
+  const context = await browser.newContext({
+    locale: "en-GB",
+    timezoneId: cfg.timeZone || "Europe/London",
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    viewport: { width: 1366, height: 900 }
+  });
+
+  let allEvents = [];
+  for (const url of weekUrls) {
+    const ev = await captureWeek(context, url);
+    allEvents = allEvents.concat(ev);
+  }
+  await browser.close();
+
+  // De-duplicate across weeks, then window-filter
+  allEvents = uniqBy(allEvents, e => `${e.title}|${e.start.toISO()}|${e.location || ""}`);
+  const events = allEvents.filter(e => e.start < end && e.end > start);
+
+  if ((events.length || 0) < (cfg.sanity?.minEvents ?? 1)) {
+    throw new Error(`Sanity check: only ${events.length} events found (min ${cfg.sanity?.minEvents}).`);
+  }
+
+  const icsEvents = toIcsEvents(events);
+  const icsText = await writeICS(icsEvents, cfg.outputPath);
   fs.writeFileSync(cfg.outputJsonPath, JSON.stringify(events, null, 2));
+
+  // Validate round-trip
+  validateAgainstSource(events, icsText, start, end);
 
   if (cfg.sanity?.protectLastGood) {
     fs.copyFileSync(cfg.outputPath, cfg.sanity.lastGoodPath);
