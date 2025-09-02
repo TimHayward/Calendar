@@ -42,8 +42,8 @@ function normaliseFromJSON(raw, tz) {
     const description = (e.description || "").toString();
     const url = e.url || e.link || e.event_url || null;
     const allDay = !!(e.all_day || e.allDay);
-    const s = e.start || e.starts_at || e.start_date || e.startDate || e.startsAt || e.starts || e.start_time || e.dtstart;
-    const en = e.end || e.ends_at || e.end_date || e.endDate || e.endsAt || e.ends || e.end_time || e.dtend;
+    const s  = e.start || e.starts_at || e.start_date || e.startDate || e.startsAt || e.starts || e.start_time || e.dtstart;
+    const en = e.end   || e.ends_at   || e.end_date   || e.endDate   || e.endsAt   || e.ends   || e.end_time   || e.dtend;
 
     let start = typeof s === "number" ? DateTime.fromMillis(s, { zone: "utc" }) : DateTime.fromISO(String(s), { zone: "utc" });
     let end   = en ? (typeof en === "number" ? DateTime.fromMillis(en, { zone: "utc" }) : DateTime.fromISO(String(en), { zone: "utc" })) : null;
@@ -57,18 +57,24 @@ function normaliseFromJSON(raw, tz) {
   return out;
 }
 
+function uniqBy(arr, idFn) {
+  const seen = new Set(); const out = [];
+  for (const x of arr) { const k = idFn(x); if (!seen.has(k)) { seen.add(k); out.push(x); } }
+  return out;
+}
+
 async function acceptCookies(page) {
   const candidates = [
     'button:has-text("Accept")','button:has-text("I agree")','button:has-text("Allow all")',
     '[aria-label*="accept" i]','[data-testid*="accept" i]'
   ];
   for (const sel of candidates) {
-    try { const el = await page.$(sel); if (el) { await el.click({ timeout: 1000 }).catch(()=>{}); await sleep(400); } } catch {}
+    try { const el = await page.$(sel); if (el) { await el.click({ timeout: 1000 }).catch(()=>{}); await sleep(300); } } catch {}
   }
 }
 
 async function autoScrollExhaustive(page) {
-  // Scroll until scrollHeight stops increasing (handles infinite/lazy lists)
+  // Scroll until the page stops growing (to trigger lazy loads)
   let last = 0, stable = 0;
   for (let i = 0; i < 50 && stable < 4; i++) {
     const h = await page.evaluate(() => document.body.scrollHeight);
@@ -80,34 +86,53 @@ async function autoScrollExhaustive(page) {
   await page.waitForLoadState("networkidle").catch(()=>{});
 }
 
-async function clickBtn(page, which) {
-  const nextSelectors = [
-    '[aria-label="Next"]','[data-testid*="next" i]','button[aria-label*="next" i]',
-    'button:has-text("Next")','[class*="next" i] button','[aria-label^="Next week" i]'
-  ];
-  const prevSelectors = [
-    '[aria-label="Previous"]','[data-testid*="prev" i]','button[aria-label*="prev" i]',
-    'button:has-text("Previous")','[class*="prev" i] button','[aria-label^="Previous week" i]'
-  ];
-  const list = which === "next" ? nextSelectors : prevSelectors;
-  for (const sel of list) {
+/** Try multiple strategies to move to the next/previous week */
+async function clickWeekNav(page, which /* "next" | "prev" */) {
+  const lists = {
+    next: [
+      '[aria-label="Next"]','[data-testid*="next" i]','button[aria-label*="next" i]',
+      'button:has-text("Next")','[class*="next" i] button','[aria-label^="Next week" i]',
+    ],
+    prev: [
+      '[aria-label="Previous"]','[data-testid*="prev" i]','button[aria-label*="prev" i]',
+      'button:has-text("Previous")','[class*="prev" i] button','[aria-label^="Previous week" i]',
+    ]
+  };
+  for (const sel of lists[which]) {
     try {
       const btn = await page.$(sel);
       if (btn) {
         await btn.click({ timeout: 2000 }).catch(()=>{});
         await page.waitForLoadState("networkidle", { timeout: 30000 }).catch(()=>{});
         await page.waitForTimeout(600);
+        log(`clicked ${which} via selector ${sel}`);
         return true;
       }
     } catch {}
   }
+  // Strategy 2: look for the date range “1 Sep - 7 Sep” container and click near its right/left edge
+  try {
+    const target = await page.locator("text= Sep ").first(); // any element containing “Sep”
+    const box = await target.boundingBox();
+    if (box) {
+      const x = which === "next" ? box.x + box.width + 16 : box.x - 16;
+      const y = box.y + box.height / 2;
+      await page.mouse.click(x, y);
+      await page.waitForLoadState("networkidle", { timeout: 30000 }).catch(()=>{});
+      await page.waitForTimeout(600);
+      log(`clicked ${which} via offset near date range`);
+      return true;
+    }
+  } catch {}
+  // Strategy 3: send ArrowRight/ArrowLeft to body (some calendars bind keyboard)
+  try {
+    await page.keyboard.press(which === "next" ? "ArrowRight" : "ArrowLeft");
+    await page.waitForLoadState("networkidle", { timeout: 30000 }).catch(()=>{});
+    await page.waitForTimeout(600);
+    log(`pressed keyboard ${which}`);
+    return true;
+  } catch {}
   return false;
-}
-
-function uniqBy(arr, idFn) {
-  const seen = new Set(); const out = [];
-  for (const x of arr) { const k = idFn(x); if (!seen.has(k)) { seen.add(k); out.push(x); } }
-  return out;
 }
 
 async function scrape() {
@@ -119,7 +144,7 @@ async function scrape() {
     viewport: { width: 1366, height: 900 }
   });
 
-  // Capture JSON across all frames & common content-types
+  // Capture JSON across all frames/content-types
   const captured = [];
   context.on("response", async (resp) => {
     try {
@@ -149,43 +174,34 @@ async function scrape() {
     try { return normaliseFromJSON(c.json, cfg.timeZone); } catch { return []; }
   });
 
-  // Navigate both directions until [start,end] is covered (or limits reached)
   const { start, end } = windowBounds();
-  let prevMoves = 0, nextMoves = 0;
-  const MAX_PREV = 8, MAX_NEXT = 12;
 
-  const coverage = () => {
+  // Expand backwards if earliest item is after our window start
+  for (let i = 0; i < 6; i++) {
     const evs = allNormalised();
-    if (!evs.length) return { min: null, max: null, okStart: false, okEnd: false };
-    const min = evs.reduce((a,b)=> a.start < b.start ? a : b).start;
-    const max = evs.reduce((a,b)=> a.start > b.start ? a : b).start;
-    return { min, max, okStart: !!min && min <= start, okEnd: !!max && max >= end.minus({minutes:1}) };
-  };
-
-  // Expand backwards if earliest captured start is after our window start
-  for (;;) {
-    const { okStart, min } = coverage();
-    if (okStart || prevMoves >= MAX_PREV) break;
-    const moved = await clickBtn(page, "prev");
-    if (!moved) break;
-    prevMoves++;
-    await autoScrollExhaustive(page);
+    const earliest = evs.length ? evs.reduce((a,b)=> a.start < b.start ? a : b).start : null;
+    if (!earliest || earliest > start) {
+      const moved = await clickWeekNav(page, "prev");
+      if (!moved) break;
+      await autoScrollExhaustive(page);
+    } else break;
   }
 
-  // Then expand forwards until we reach the end bound
-  for (;;) {
-    const { okEnd } = coverage();
-    if (okEnd || nextMoves >= MAX_NEXT) break;
-    const moved = await clickBtn(page, "next");
-    if (!moved) break;
-    nextMoves++;
-    await autoScrollExhaustive(page);
+  // Expand forwards until we reach the end bound
+  for (let i = 0; i < 12; i++) {
+    const evs = allNormalised();
+    const latest = evs.length ? evs.reduce((a,b)=> a.start > b.start ? a : b).start : null;
+    if (!latest || latest < end.minus({ minutes: 1 })) {
+      const moved = await clickWeekNav(page, "next");
+      if (!moved) break;
+      await autoScrollExhaustive(page);
+    } else break;
   }
 
-  // Prefer captured JSON; dedupe across all pages
+  // Prefer captured JSON; de-duplicate across all pages
   let events = uniqBy(allNormalised(), e => `${e.title}|${e.start.toISO()}|${e.location || ""}`);
 
-  // Fallback to DOM heuristics only if JSON gave nothing
+  // Fallback to DOM if JSON yielded nothing at all
   if (!events.length) {
     const dom = await page.evaluate(() => {
       const items = [];
@@ -232,7 +248,7 @@ async function scrape() {
     log("DOM extraction produced", events.length, "events");
   }
 
-  // Debug artefacts
+  // DEBUG artefacts (HTML, screenshot, redacted network summary)
   if (cfg.debug?.enabled) {
     try { ensureDir(cfg.debug.htmlPath); fs.writeFileSync(cfg.debug.htmlPath, await page.content(), "utf8"); } catch {}
     try { ensureDir(cfg.debug.screenshotPath); await page.screenshot({ path: cfg.debug.screenshotPath, fullPage: true }); } catch {}
@@ -247,9 +263,7 @@ async function scrape() {
   return events;
 }
 
-function filterWindow(all, start, end) {
-  return all.filter(e => e.start < end && e.end > start);
-}
+function filterWindow(all, start, end) { return all.filter(e => e.start < end && e.end > start); }
 
 function toIcsEvents(evts) {
   return evts.map(e => {
