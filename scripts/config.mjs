@@ -1,7 +1,7 @@
 export default {
   targetUrl: "https://app.involveeducation.com/involve/display/6491925eefde2898c2ee6c76",
   startDate: "2025-09-01",     // pin the fortnight start
-  windowDays: 14,
+  windowDays: 28,
   timeZone: "Europe/London",
   expectedCounts: null,        // or { week1: 20, week2: 15 } if you want hard assertions
   outputPath: "public/school-calendar.ics",
